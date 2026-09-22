@@ -345,6 +345,19 @@ describe("MCP Tool Handlers", () => {
         filter: "done = false",
       });
     });
+
+    // Regression test for issue #3: Vikunja 2.4.0 removed /tasks/all, so the
+    // no-projectId route must hit /tasks. A GET to /tasks/all falls through
+    // to /tasks/{id} with id="all", which fails int parsing and Vikunja
+    // answers 400 "Invalid model provided".
+    it("should call /tasks, not /tasks/all, for the no-projectId route", async () => {
+      mockGet.mockResolvedValueOnce({ data: [], pagination: null });
+
+      await callTool("tasks_list", {});
+
+      expect(mockGet).toHaveBeenCalledWith("/tasks", expect.any(Object));
+      expect(mockGet).not.toHaveBeenCalledWith("/tasks/all", expect.anything());
+    });
   });
 
   describe("tasks_get", () => {
@@ -409,8 +422,21 @@ describe("MCP Tool Handlers", () => {
   });
 
   describe("tasks_update", () => {
-    it("should update a task", async () => {
-      const mockTask = { id: 1, title: "Updated Task", done: true };
+    it("should update a task, preserving fields it did not read-modify-write over", async () => {
+      const existingTask = {
+        id: 1,
+        title: "Old Title",
+        description: "Old description",
+        due_date: "2024-01-01T00:00:00Z",
+        start_date: "2024-01-02T00:00:00Z",
+        end_date: "2024-01-03T00:00:00Z",
+        priority: 2,
+        done: false,
+        hex_color: "abcdef",
+        percent_done: 0.5,
+      };
+      const mockTask = { ...existingTask, title: "Updated Task", done: true, priority: 5 };
+      mockGet.mockResolvedValueOnce({ data: existingTask });
       mockPost.mockResolvedValueOnce({ data: mockTask });
 
       const response = await callTool("tasks_update", {
@@ -423,17 +449,37 @@ describe("MCP Tool Handlers", () => {
       });
       const data = parseResponse(response);
 
+      expect(mockGet).toHaveBeenCalledWith("/tasks/1");
       expect(mockPost).toHaveBeenCalledWith("/tasks/1", {
         title: "Updated Task",
-        done: true,
+        description: "Old description",
+        due_date: "2024-01-01T00:00:00Z",
+        start_date: "2024-01-02T00:00:00Z",
+        end_date: "2024-01-03T00:00:00Z",
         priority: 5,
+        done: true,
+        hex_color: "abcdef",
+        percent_done: 0.5,
         project_id: 2,
         is_favorite: true,
       });
       expect(data).toEqual(mockTask);
     });
 
-    it("should update task with all date fields", async () => {
+    it("should update task with all date fields, preserving title/priority/done", async () => {
+      const existingTask = {
+        id: 1,
+        title: "Original Title",
+        description: "Original description",
+        due_date: "2024-01-01T00:00:00Z",
+        start_date: "2024-01-01T00:00:00Z",
+        end_date: "2024-01-01T00:00:00Z",
+        priority: 3,
+        done: true,
+        hex_color: "000000",
+        percent_done: 0.1,
+      };
+      mockGet.mockResolvedValueOnce({ data: existingTask });
       mockPost.mockResolvedValueOnce({ data: { id: 1 } });
 
       await callTool("tasks_update", {
@@ -446,13 +492,54 @@ describe("MCP Tool Handlers", () => {
         description: "Updated description",
       });
 
+      expect(mockGet).toHaveBeenCalledWith("/tasks/1");
       expect(mockPost).toHaveBeenCalledWith("/tasks/1", {
+        title: "Original Title",
+        description: "Updated description",
         due_date: "2024-12-31T23:59:59Z",
         start_date: "2024-12-01T00:00:00Z",
         end_date: "2024-12-15T00:00:00Z",
+        priority: 3,
+        done: true,
         hex_color: "ff0000",
         percent_done: 0.75,
-        description: "Updated description",
+      });
+    });
+
+    // Regression test for issue #2 (bug 1): a done-only update used to send
+    // {done: true} as the whole body. Vikunja's POST /tasks/{id} replaces the
+    // task wholesale, so every other field reset to its zero value -
+    // silently wiping title, description, and priority (and reopening done
+    // tasks the other way around). The fix reads the task first and merges.
+    it("should leave title, description, and priority unchanged on a done-only update", async () => {
+      const existingTask = {
+        id: 1,
+        title: "Keep me",
+        description: "Keep this too",
+        due_date: "2024-06-01T00:00:00Z",
+        start_date: "2024-05-01T00:00:00Z",
+        end_date: "2024-06-15T00:00:00Z",
+        priority: 4,
+        done: false,
+        hex_color: "112233",
+        percent_done: 0.5,
+      };
+      mockGet.mockResolvedValueOnce({ data: existingTask });
+      mockPost.mockResolvedValueOnce({ data: { ...existingTask, done: true } });
+
+      await callTool("tasks_update", { taskId: 1, done: true });
+
+      expect(mockGet).toHaveBeenCalledWith("/tasks/1");
+      expect(mockPost).toHaveBeenCalledWith("/tasks/1", {
+        title: "Keep me",
+        description: "Keep this too",
+        due_date: "2024-06-01T00:00:00Z",
+        start_date: "2024-05-01T00:00:00Z",
+        end_date: "2024-06-15T00:00:00Z",
+        priority: 4,
+        done: true,
+        hex_color: "112233",
+        percent_done: 0.5,
       });
     });
   });
