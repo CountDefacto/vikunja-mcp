@@ -327,7 +327,28 @@ server.tool(
   async (args) => {
     try {
       const client = getClient();
-      const body: Record<string, unknown> = {};
+
+      // Vikunja's POST /tasks/{id} replaces the whole task: any field absent
+      // from the body resets to its zero value. Read the current task first
+      // and seed the body with its values so fields the caller did not pass
+      // survive the round trip; the caller's own args are then applied on
+      // top so they still take effect (including explicit clearing, e.g.
+      // description: "").
+      const current = await client.get<Task>(`/tasks/${args.taskId}`);
+      const existing = current.data;
+
+      const body: Record<string, unknown> = {
+        title: existing.title,
+        description: existing.description,
+        due_date: existing.due_date,
+        start_date: existing.start_date,
+        end_date: existing.end_date,
+        priority: existing.priority,
+        done: existing.done,
+        hex_color: existing.hex_color,
+        percent_done: existing.percent_done,
+      };
+
       if (args.title !== undefined) body.title = args.title;
       if (args.description !== undefined) body.description = args.description;
       if (args.dueDate !== undefined) body.due_date = args.dueDate;
@@ -337,6 +358,10 @@ server.tool(
       if (args.done !== undefined) body.done = args.done;
       if (args.color !== undefined) body.hex_color = args.color;
       if (args.percentDone !== undefined) body.percent_done = args.percentDone;
+      // project_id and is_favorite are sent only when the caller passes
+      // them: Vikunja keeps the current project and favourite state when
+      // they are absent from the body, so echoing the read-back value back
+      // would be redundant and could fight with the per-user favourite flag.
       if (args.projectId !== undefined) body.project_id = args.projectId;
       if (args.isFavorite !== undefined) body.is_favorite = args.isFavorite;
 
